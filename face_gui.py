@@ -28,7 +28,7 @@ THRESHOLD       = 0.65
 MIN_FACE_SIZE   = 40
 IMG_SIZE        = 160
 DISPLAY_W, DISPLAY_H = 800, 600   # camera canvas size
-
+# These are the key settings. `THRESHOLD` is the most important — it decides how similar a face must be to a stored identity before it's labelled as "known" rather than "Unknown".
 
 # ─────────────────────── Utility helpers ──────────────────────────────────
 def get_embedding(resnet, face_tensor):
@@ -90,6 +90,10 @@ def load_database():
 
 
 # ─────────────────────────── Main GUI ─────────────────────────────────────
+# The entire GUI is one class that extends `tk.Tk` (a Tkinter window). When it starts, it runs three things:
+# `_build_ui()` — draws all the buttons, canvas, and log
+# `_load_models_async()` — loads MTCNN and FaceNet **in a background thread** so the window doesn't freeze
+# Sets up a close handler to safely release the camera
 class FaceRecognitionApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -113,6 +117,9 @@ class FaceRecognitionApp(tk.Tk):
         self._load_models_async()
 
     # ─────────────── UI construction ──────────────────────────────────────
+    # Splits the window into two panels:
+    # **Left** — a `Canvas` widget where each camera frame is drawn as an image
+    # **Right** — buttons, the threshold slider, and the event log text box
     def _build_ui(self):
         # Left panel – video
         left = tk.Frame(self, bg='#1e1e2e')
@@ -195,17 +202,19 @@ class FaceRecognitionApp(tk.Tk):
         self.log_text.configure(state='disabled')
 
     # ─────────────── Model loading ────────────────────────────────────────
+    # `_load_models()`
+    # Runs in a background thread. Loads two models:  
     def _load_models_async(self):
         threading.Thread(target=self._load_models, daemon=True).start()
 
     def _load_models(self):
-        self._log("Loading MTCNN …")
+        self._log("Loading MTCNN …")   # **MTCNN** — the face detector
         self.mtcnn = MTCNN(image_size=IMG_SIZE, margin=20,
                            min_face_size=MIN_FACE_SIZE,
                            thresholds=[0.6, 0.7, 0.7], factor=0.709,
                            post_process=True, keep_all=True, device=DEVICE)
         self._log("Loading FaceNet (VGGFace2) …")
-        self.resnet = InceptionResnetV1(pretrained='vggface2').eval().to(DEVICE)
+        self.resnet = InceptionResnetV1(pretrained='vggface2').eval().to(DEVICE)   # **InceptionResnetV1** — the FaceNet model pretrained on VGGFace2
         self._log("Models ready.")
 
         if os.path.exists(EMBEDDINGS_FILE):
@@ -219,6 +228,8 @@ class FaceRecognitionApp(tk.Tk):
         self.after(0, lambda: self.status_lbl.config(text="✅  Models loaded"))
 
     # ─────────────── Camera control ───────────────────────────────────────
+    # `_start_camera()` / `_stop_camera()`
+    # Opens/closes `cv2.VideoCapture(0)` — your default webcam (index 0). If you have multiple cameras, change `0` to `1` or `2`.
     def _start_camera(self):
         if self.running or self.resnet is None:
             return
@@ -243,6 +254,14 @@ class FaceRecognitionApp(tk.Tk):
         self._log("Camera stopped.")
 
     # ─────────────── Per-frame processing ────────────────────────────────
+    # `_process_frame()`
+    #This is the **main loop**. It:
+    #1. Reads a frame from the webcam
+    #2. Every **3rd frame**, runs detection + recognition (to keep it fast)
+    #3. Draws the cached bounding boxes on every frame
+    #4. Displays the result on the canvas
+    #5. Schedules itself to run again in 15ms using `self.after(15, ...)`
+    #The reason it uses `self.after()` instead of a `while` loop is so the GUI stays responsive — a `while` loop would freeze the window.
     def _process_frame(self):
         if not self.running:
             return
