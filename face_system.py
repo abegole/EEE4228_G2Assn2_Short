@@ -16,6 +16,7 @@ if torch.cuda.is_available() == 1:
 else: DEVICE = 'cpu'
 DB_PATH         = 'face_database' 
 
+# Pickle file (serialized bytestream for networking) to store {name: [embeddings]} dict)
 EMBEDDINGS_FILE = 'embeddings.pkl'
 # Detection threshold to be considered valid face. Also used for MTCNN
 THRESHOLD       = 0.7           
@@ -75,11 +76,20 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
     print(f"\n[INFO] Database built – {len(database)} identities, {total_imgs} images.")
     return database
 
+# Uses a (1,3,IMG_SIZE,IMG_SIZE) array (a tensor) to make an embedding layer of 512-Dim data. 
+# This gives each of the 512 data vectors a unique ID, & positions them
+# near similar vectors/vectors that often go together, like Aiden's eyes and his mouth
 
-def get_embedding(resnet, face_tensor: torch.Tensor) -> np.ndarray:
-    """Return L2-normalised 512-D embedding for a (1,3,160,160) tensor."""
-    with torch.no_grad():
-        emb = resnet(face_tensor.unsqueeze(0).to(DEVICE))
+# Requires the face tensor detected, and ResNet to be loaded to create embed layer
+def get_embedding(resnet, face_tensor: torch.Tensor) -> np.ndarray: 
+# Specify as numpy N-Dimensional array ahead of time to prevent faulty dynamic allocation
+    # Turn off gradient calculation, since it saves compute. For training, turn this on. 
+    with torch.no_grad():  
+        # In embedding layer, use resnet to correlate 512 feature 
+        # vectors into a feature map derived from the face tensor 
+        # that is unsqueezed to 0, separating every single feature 
+        emb = resnet(face_tensor.unsqueeze(0).to(DEVICE)) # Specify device to compute
+    # Return our single resnet result as a numpy array (1 face at a time)
     return emb.cpu().numpy()[0]
 
 
@@ -112,8 +122,11 @@ def load_models():
 
 
 def load_database() -> dict:
-    if os.path.exists(EMBEDDINGS_FILE):
+    # If the embeddings file specifies a path, load it
+    if os.path.exists(EMBEDDINGS_FILE) ==1:
         with open(EMBEDDINGS_FILE, 'rb') as f:
+            # Unpickle (deserialize) the bytestream in embeddings 
+            # to load the DB. 'rb' specifies to read it in binary mode.
             return pickle.load(f)
     return {}
 
