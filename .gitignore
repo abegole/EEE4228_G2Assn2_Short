@@ -205,3 +205,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Face Recognition Data
+face_database/
+embeddings.pkl
+confusion_matrix.png
