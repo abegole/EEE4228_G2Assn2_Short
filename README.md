@@ -1,26 +1,18 @@
 # Face Detection & Recognition System
-## MTCNN + FaceNet (InceptionResnetV1 / VGGFace2)
+# MTCNN + FaceNet (InceptionResnetV1 / VGGFace2)
 
----
-
-### Quick Start
+# Basic Usage
 
 ```bash
-# 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Collect images (≥10 per person)
-python capture_faces.py --name "Alice" --count 15
-python capture_faces.py --name "Bob"   --count 15
-# … repeat for each team member
+python capture_faces.py --name "test1" --count 15
+python capture_faces.py --name "test2"   --count 15
+# etc...
 
-# 3. Build the embedding database
+# build then run
 python face_system.py --rebuild
-
-# 4a. Run the CLI live demo
 python face_system.py
-
-# 4b. Run the GUI live demo  ← recommended for assessment
 python face_gui.py
 ```
 

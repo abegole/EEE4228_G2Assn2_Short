@@ -1,49 +1,29 @@
-"""
-Face Detection & Recognition System
-Uses MTCNN for detection + FaceNet (InceptionResnetV1) for recognition
-"""
-
 import os
-import pickle
 import numpy as np
 import cv2
+import argparse
+
 from PIL import Image
 import torch
+import pickle
 from torchvision import transforms
 from facenet_pytorch import MTCNN, InceptionResnetV1
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ─────────────────────────── Configuration ────────────────────────────────
-DEVICE          = 'cuda' if torch.cuda.is_available() else 'cpu'
-DB_PATH         = 'face_database'        # folder that holds per-person sub-folders
+# MTCNN optimization of processor
+if torch.cuda.is_available() == 1:
+    DEVICE          = 'cuda'  
+else: DEVICE = 'cpu'
+DB_PATH         = 'face_database' 
+
 EMBEDDINGS_FILE = 'embeddings.pkl'
-THRESHOLD       = 0.65                   # cosine-similarity threshold for recognition
-MIN_FACE_SIZE   = 40                     # px – smaller detections are skipped
-IMG_SIZE        = 160                    # FaceNet input size
+# Detection threshold to be considered valid face. Also used for MTCNN
+THRESHOLD       = 0.7           
+# Basic image size for MTCNN        
+IMG_SIZE        = 180     
+# Minimum detection size - smaller is thrown out               
+MIN_FACE_SIZE   = 60                     
 
-# ───────────────────────── Model initialisation ───────────────────────────
-def load_models():
-    """Return (mtcnn, resnet) ready for inference."""
-    mtcnn = MTCNN(
-        image_size=IMG_SIZE,
-        margin=20,
-        min_face_size=MIN_FACE_SIZE,
-        thresholds=[0.6, 0.7, 0.7],
-        factor=0.709,
-        post_process=True,
-        keep_all=True,
-        device=DEVICE
-    )
-    resnet = InceptionResnetV1(pretrained='vggface2').eval().to(DEVICE)
-    return mtcnn, resnet
-
-
-# ─────────────────────── Embedding utilities ──────────────────────────────
-def get_embedding(resnet, face_tensor: torch.Tensor) -> np.ndarray:
-    """Return L2-normalised 512-D embedding for a (1,3,160,160) tensor."""
-    with torch.no_grad():
-        emb = resnet(face_tensor.unsqueeze(0).to(DEVICE))
-    return emb.cpu().numpy()[0]
 
 
 def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
@@ -96,6 +76,41 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
     return database
 
 
+def get_embedding(resnet, face_tensor: torch.Tensor) -> np.ndarray:
+    """Return L2-normalised 512-D embedding for a (1,3,160,160) tensor."""
+    with torch.no_grad():
+        emb = resnet(face_tensor.unsqueeze(0).to(DEVICE))
+    return emb.cpu().numpy()[0]
+
+
+def load_models():
+    # start up resnet. 
+    model = InceptionResnetV1(pretrained='vggface2').eval().to(DEVICE)
+
+    tsflw_mtcnn = MTCNN(
+        # Check this website: https://mtcnn.readthedocs.io/en/latest/usage_params/#fine-tuning-parameters-for-each-detection-stage
+        # This also helps: https://github.com/timesler/facenet-pytorch/blob/master/models/mtcnn.py
+        # MTCNN input image size for FaceNet
+        image_size=IMG_SIZE, 
+        margin=10, # crop margin for edge of images. 
+        # If too high, will throw first give bad recog
+        # Error if = image size. More crop is faster
+        # again this throws out tiny faces. Make bigger if smaller images
+        min_face_size=MIN_FACE_SIZE,
+        # MTCNN thresholds. Can define seperately or all of them here
+        thresholds=[THRESHOLD, THRESHOLD, THRESHOLD],
+        factor=0.709,
+        # Refine images 
+        post_process=True,
+
+        keep_all=True, # false by default. 
+        # Returns only the best detection if true
+        device=DEVICE
+        # Tell MTCNN what to use
+    )
+    return tsflw_mtcnn, model
+
+
 def load_database() -> dict:
     if os.path.exists(EMBEDDINGS_FILE):
         with open(EMBEDDINGS_FILE, 'rb') as f:
@@ -126,7 +141,7 @@ def recognise(embedding: np.ndarray, database: dict) -> tuple[str, float]:
     return best_name, best_score
 
 
-# ───────────────────────── Live-camera loop ───────────────────────────────
+# Webcam Gui
 def run_live(mtcnn, resnet, database: dict):
     """
     Capture frames from the default webcam, detect faces with MTCNN,
@@ -209,24 +224,28 @@ def run_live(mtcnn, resnet, database: dict):
     cv2.destroyAllWindows()
 
 
-# ─────────────────────────────── Main ─────────────────────────────────────
+# Check if running main program, otherwise this just provides functions
 if __name__ == '__main__':
-    import argparse
+    # This allows us to use --rebuild or specify a new DB path when running from cmd line
     parser = argparse.ArgumentParser(description='Face Recognition System')
     parser.add_argument('--rebuild', action='store_true',
-                        help='Force rebuild of embeddings database')
+                        help='Manually rebuild of DB')
     parser.add_argument('--db', default=DB_PATH,
-                        help='Path to face image database folder')
+                        help='Specify face DB path')
     args = parser.parse_args()
 
-    print(f"[INFO] Using device: {DEVICE}")
-    print("[INFO] Loading models …")
-    mtcnn, resnet = load_models()
+    print(f"[DEBUG] Using device: {DEVICE}")
+    print("[DEBUG] Loading models…")
+    tsflw_mtcnn, model = load_models()
+    print("[DEBUG] Models loaded.")
 
-    if args.rebuild or not os.path.exists(EMBEDDINGS_FILE):
-        database = build_database(mtcnn, resnet, args.db)
+    if args.rebuild == 1 or not os.path.exists(EMBEDDINGS_FILE) == 1:
+        # Args added are run here if there are any, or if there's an embeddings file 
+        database = build_database(tsflw_mtcnn, model, args.db)
+        print(f"[ARGS] Loaded {len(database)} faces")
+
     else:
         database = load_database()
-        print(f"[INFO] Loaded database: {len(database)} identities")
+        print(f"[NO_ARGS] Loaded {len(database)} faces")
 
-    run_live(mtcnn, resnet, database)
+    run_live(tsflw_mtcnn, model, database)
