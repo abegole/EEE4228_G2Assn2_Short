@@ -204,6 +204,12 @@ class FaceRecognitionApp(tk.Tk):
     # ─────────────── Model loading ────────────────────────────────────────
     # `_load_models()`
     # Runs in a background thread. Loads two models:  
+    # _load_models()`
+    #Runs in a background thread. Loads two models:
+    #MTCNN — the face detector
+    #**InceptionResnetV1** — the FaceNet model pretrained on VGGFace2
+    #After loading, it checks if `embeddings.pkl` already exists and loads the database automatically.
+
     def _load_models_async(self):
         threading.Thread(target=self._load_models, daemon=True).start()
 
@@ -277,7 +283,13 @@ class FaceRecognitionApp(tk.Tk):
         annotated = self._draw_annotations(frame.copy())
         self._show_frame(annotated)
         self.after(15, self._process_frame)
-
+    # `_detect_and_recognise()`
+    # The core vision logic per frame:
+    # frame → PIL Image → MTCNN detects faces → bounding boxes
+    # MTCNN extracts & aligns each face crop (160×160)
+    # FaceNet converts each crop to a 512-D embedding
+    # cosine similarity vs mean embedding of each person in DB
+    # if best score ≥ threshold → assign name, else → "Unknown"
     def _detect_and_recognise(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil = Image.fromarray(rgb)
@@ -316,6 +328,11 @@ class FaceRecognitionApp(tk.Tk):
         cv2.putText(frame, f"DB: {len(self.database)} identities | thresh={self.thresh_var.get():.2f}",
                     (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
         return frame
+    #Green box = recognised person
+    #Red box = Unknown
+    #Name + confidence score label above the box
+    #HUD text showing DB size and current threshold
+
 
     def _show_frame(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
