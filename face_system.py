@@ -28,11 +28,6 @@ MIN_FACE_SIZE   = 60
 
 
 def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
-    # 
-    """
-    Walk db_dir/<person_name>/*.jpg|png and build {name: [embeddings]} dict.
-    Saves result to EMBEDDINGS_FILE and returns it.
-    """
     # if the current path does not refer to an existing database path, make a new database
     if not os.path.isdir(db_dir):
         os.makedirs(db_dir)
