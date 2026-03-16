@@ -28,17 +28,24 @@ MIN_FACE_SIZE   = 60
 
 
 def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
+    # 
     """
     Walk db_dir/<person_name>/*.jpg|png and build {name: [embeddings]} dict.
     Saves result to EMBEDDINGS_FILE and returns it.
     """
+    # if the current path does not refer to an existing database path, make a new database
     if not os.path.isdir(db_dir):
         os.makedirs(db_dir)
         print(f"[INFO] Created database directory: {db_dir}/")
-        print("[INFO] Add sub-folders (one per person) with ≥10 face images each.")
-        return {}
+        return {} # Since we just made an empty DB, there's nothing to load so return
+
+
+    # create a database as a dict class, which stores data as key-value pairs
+    # Key is a string (person's name) and value is a list of numpy arrays 
+    # (embeddings for that person).
 
     database: dict[str, list[np.ndarray]] = {}
+    # Start an int to store an iterative count. Probably a better way to do this 
     total_imgs = 0
 
     for person in sorted(os.listdir(db_dir)):
@@ -47,15 +54,22 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
             continue
         embeddings = []
         for fname in os.listdir(person_dir):
+            # If invalid image type, skip it
             if not fname.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
                 continue
+            # Set a var img_path to the current path, which would be the database path + the person's name + the image file name
             img_path = os.path.join(person_dir, fname)
-            try:
+            # Try to open but if error is thrown it will escape
+            try: # use try in case of bad/corrupt/invalid images
                 img = Image.open(img_path).convert('RGB')
+
+                # Use MTCNN to obtain a face tensor/detection from the image
                 face_tensor = mtcnn(img)          # (N,3,160,160) or None
+                # Call out if an image assigned to a person fails to detect a face with MTCNN and skip it
                 if face_tensor is None:
                     print(f"  [WARN] No face found in {img_path}")
                     continue
+                
                 # Use only the first detected face in each image
                 if face_tensor.ndim == 4:
                     face_tensor = face_tensor[0]
