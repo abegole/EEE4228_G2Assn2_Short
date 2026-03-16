@@ -209,3 +209,4 @@ __marimo__/
 
 #Face Databases, to avoid excess github load
 face_database/
+embeddings.pkl
