@@ -2,10 +2,8 @@
 face_gui.py  –  Tkinter GUI wrapper for the Face Recognition System
 Embeds the live camera feed inside a window, shows identity log,
 and provides controls for rebuilding the database.
-
 Run:  python face_gui.py
 """
-
 import os
 import sys
 import threading
