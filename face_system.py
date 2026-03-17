@@ -69,6 +69,8 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
                 
                 # Use only the first detected face in each image
                 if face_tensor.ndim == 4:
+                    if face_tensor.shape[0] !=  1:
+                        print(f"  [INFO] {face_tensor.shape[0]} faces detected in {img_path}, using first one")
                     face_tensor = face_tensor[0]
                 # This means if there are many faces in training images, it will only use the first
                 # Thus for training ensure ppl upload single faces
