@@ -2,10 +2,8 @@
 face_gui.py  –  Tkinter GUI wrapper for the Face Recognition System
 Embeds the live camera feed inside a window, shows identity log,
 and provides controls for rebuilding the database.
-
 Run:  python face_gui.py
 """
-
 import os
 import sys
 import threading
@@ -48,7 +46,6 @@ def recognise(embedding, mean_db):
         return 'Unknown', best_score
     return best_name, best_score
 
-
 def build_database(mtcnn, resnet, db_dir, log_fn=print):
     database = {}
     if not os.path.isdir(db_dir):
@@ -81,13 +78,11 @@ def build_database(mtcnn, resnet, db_dir, log_fn=print):
     log_fn(f"Database saved – {len(database)} identities.")
     return database
 
-
 def load_database():
     if os.path.exists(EMBEDDINGS_FILE):
         with open(EMBEDDINGS_FILE, 'rb') as fp:
             return pickle.load(fp)
     return {}
-
 
 # ─────────────────────────── Main GUI ─────────────────────────────────────
 # The entire GUI is one class that extends `tk.Tk` (a Tkinter window). When it starts, it runs three things:
@@ -332,7 +327,6 @@ class FaceRecognitionApp(tk.Tk):
     #Red box = Unknown
     #Name + confidence score label above the box
     #HUD text showing DB size and current threshold
-
 
     def _show_frame(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
