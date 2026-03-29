@@ -60,22 +60,28 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
             try: # use try in case of bad/corrupt/invalid images
                 img = Image.open(img_path).convert('RGB')
 
-                # Use MTCNN to obtain a face tensor/detection from the image
-                face_tensor = mtcnn(img)          # (N,3,160,160) or None
-                # Call out if an image assigned to a person fails to detect a face with MTCNN and skip it
-                if face_tensor is None:
+                # Detect faces and get bounding boxes and probabilities
+                boxes, probs = mtcnn.detect(img, landmarks=False)
+                if boxes is None or len(boxes) == 0:
                     print(f"  [WARN] No face found in {img_path}")
                     continue
-                
-                # Use only the first detected face in each image
-                if face_tensor.ndim == 4:
-                    if face_tensor.shape[0] !=  1:
-                        print(f"  [INFO] {face_tensor.shape[0]} faces detected in {img_path}, using first one")
-                    face_tensor = face_tensor[0]
-                # This means if there are many faces in training images, it will only use the first
-                # Thus for training ensure ppl upload single faces
+                elif len(boxes) > 1:
+                    print(f"  [WARN] Multiple faces found in {img_path}, using highest confidence")
+
+                # Find the index of the face with the highest confidence
+                best_idx = np.argmax(probs)
+
+                # Extract the face tensor for the best face
+                face_tensors = mtcnn.extract(img, boxes[best_idx:best_idx+1], save_path=None)
+                if face_tensors is None or face_tensors[0] is None:
+                    print(f"  [WARN] Failed to extract face from {img_path}")
+                    continue
+                face_tensor = face_tensors[0]
+
+                # Add to embeddings
                 embeddings.append(get_embedding(resnet, face_tensor))
                 total_imgs += 1
+            
             # If try fails, print the error pointing to the image
             except Exception as e:
                 print(f"  [ERR] {img_path}: {e}")
