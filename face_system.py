@@ -47,6 +47,12 @@ def augment_image(img_np: np.ndarray) -> list[np.ndarray]:
 
     return augmented
 
+def get_embeddings_batch(resnet, face_tensors: list[torch.Tensor]) -> list[np.ndarray]:
+    # Use resnet to process a whole batch at once for speed
+    batch = torch.stack([ft for ft in face_tensors]).to(DEVICE)
+    with torch.no_grad():
+        embs = resnet(batch)
+    return [e.cpu().numpy() for e in embs]
 
 def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
     # if the current path does not refer to an existing database path, make a new database
@@ -62,13 +68,14 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
 
     # Start an int to store an iterative count. Probably a better way to do this 
     total_imgs = 0
-
+    
     for person in sorted(os.listdir(db_dir)):
         # If somehow the person's name is not a directory, skip it
         person_dir = os.path.join(db_dir, person)
         if not os.path.isdir(person_dir):
             continue
         embeddings = []
+        face_tensor_batch = []
 
         for fname in os.listdir(person_dir):
             # If invalid image type, skip it
@@ -106,15 +113,14 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
                     if face_tensors is None or face_tensors[0] is None:
                         print(f"  [WARN] Failed to extract face from {img_path}")
                         continue
-                    face_tensor = face_tensors[0]
-
-                    # Add to embeddings
-                    embeddings.append(get_embedding(resnet, face_tensor))
+                    face_tensor_batch.append(face_tensors[0])
                     total_imgs += 1
-
-            # If try fails, print the error pointing to the image
             except Exception as e:
                 print(f"  [ERR] {img_path}: {e}")
+
+        if face_tensor_batch:
+            embeddings = get_embeddings_batch(resnet, face_tensor_batch)
+            # If try fails, print the error pointing to the image
 
         # check if embeddings from this person is not empty
         if embeddings:
