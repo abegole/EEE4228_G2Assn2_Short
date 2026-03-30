@@ -9,6 +9,7 @@ import pickle
 from torchvision import transforms
 from facenet_pytorch import MTCNN, InceptionResnetV1
 from sklearn.metrics.pairwise import cosine_similarity
+import random
 
 # MTCNN optimization of processor
 if torch.cuda.is_available() == 1:
@@ -26,6 +27,26 @@ IMG_SIZE        = 180
 MIN_FACE_SIZE   = 60                     
 
 
+def augment_image(img_np: np.ndarray) -> list[np.ndarray]:
+    """Returns a list of augmented versions of the input image."""
+    augmented = []
+    h, w = img_np.shape[:2]
+    center = (w // 2, h // 2)
+
+    # Horizontal flip
+    augmented.append(cv2.flip(img_np, 1))
+
+    # Brightness variations
+    augmented.append(cv2.convertScaleAbs(img_np, alpha=1.2, beta=30))   # bright
+    augmented.append(cv2.convertScaleAbs(img_np, alpha=0.8, beta=-30))  # dark
+
+    # Slight rotations
+    for angle in [-10, 10]:
+        M = cv2.getRotationMatrix2D(center, angle, 1)
+        augmented.append(cv2.warpAffine(img_np, M, (w, h)))
+
+    return augmented
+
 
 def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
     # if the current path does not refer to an existing database path, make a new database
@@ -34,12 +55,11 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
         print(f"[INFO] Created database directory: {db_dir}/")
         return {} # Since we just made an empty DB, there's nothing to load so return
 
-
     # create a database as a dict class, which stores data as key-value pairs
     # Key is a string (person's name) and value is a list of numpy arrays 
     # (embeddings for that person).
-
     database: dict[str, list[np.ndarray]] = {}
+
     # Start an int to store an iterative count. Probably a better way to do this 
     total_imgs = 0
 
@@ -54,34 +74,44 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
             # If invalid image type, skip it
             if not fname.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
                 continue
+
             # Set a var img_path to the current path, which would be the database path + the person's name + the image file name
             img_path = os.path.join(person_dir, fname)
+
             # Try to open but if error is thrown it will escape
             try: # use try in case of bad/corrupt/invalid images
                 img = Image.open(img_path).convert('RGB')
+                img_np = np.array(img)
 
-                # Detect faces and get bounding boxes and probabilities
-                boxes, probs = mtcnn.detect(img, landmarks=False)
-                if boxes is None or len(boxes) == 0:
-                    print(f"  [WARN] No face found in {img_path}")
-                    continue
-                elif len(boxes) > 1:
-                    print(f"  [WARN] Multiple faces found in {img_path}, using highest confidence")
+                # Generate original + 5 augmented versions of every image
+                # This ensures every image contributes equally to the database
+                all_versions = [img_np] + augment_image(img_np)
 
-                # Find the index of the face with the highest confidence
-                best_idx = np.argmax(probs)
+                for version in all_versions:
+                    pil_version = Image.fromarray(version)
 
-                # Extract the face tensor for the best face
-                face_tensors = mtcnn.extract(img, boxes[best_idx:best_idx+1], save_path=None)
-                if face_tensors is None or face_tensors[0] is None:
-                    print(f"  [WARN] Failed to extract face from {img_path}")
-                    continue
-                face_tensor = face_tensors[0]
+                    # Detect faces and get bounding boxes and probabilities
+                    boxes, probs = mtcnn.detect(pil_version, landmarks=False)
+                    if boxes is None or len(boxes) == 0:
+                        print(f"  [WARN] No face found in {img_path}")
+                        continue
+                    elif len(boxes) > 1:
+                        print(f"  [WARN] Multiple faces found in {img_path}, using highest confidence")
 
-                # Add to embeddings
-                embeddings.append(get_embedding(resnet, face_tensor))
-                total_imgs += 1
-            
+                    # Find the index of the face with the highest confidence
+                    best_idx = np.argmax(probs)
+
+                    # Extract the face tensor for the best face
+                    face_tensors = mtcnn.extract(pil_version, boxes[best_idx:best_idx+1], save_path=None)
+                    if face_tensors is None or face_tensors[0] is None:
+                        print(f"  [WARN] Failed to extract face from {img_path}")
+                        continue
+                    face_tensor = face_tensors[0]
+
+                    # Add to embeddings
+                    embeddings.append(get_embedding(resnet, face_tensor))
+                    total_imgs += 1
+
             # If try fails, print the error pointing to the image
             except Exception as e:
                 print(f"  [ERR] {img_path}: {e}")
@@ -90,16 +120,33 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
         if embeddings:
             # dict key is person's name, embeddings is numpy arrays of features
             database[person] = embeddings
-            print(f"  [INFO] {person}: {len(embeddings)} embeddings")
+            print(f"  [INFO] {person}: {len(embeddings)} embeddings before balancing")
         else:
             # If no valid, skip it
             print(f"  [INFO] {person}: no valid faces found")
+
+    # Balance all classes to the smallest class size so no person
+    # has more influence than another in the evaluation
+    min_count = min(len(embs) for embs in database.values())
+    max_count = max(len(embs) for embs in database.values())
+
+    # Warn if there is a large imbalance even after augmentation
+    if max_count > min_count * 2:
+        print(f"[WARN] Large imbalance detected — min={min_count}, max={max_count}. "
+              f"Consider collecting more images for smaller classes.")
+
+    print(f"\n[INFO] Balancing all classes to {min_count} embeddings (smallest class size)")
+    database = {
+        name: random.sample(embs, min_count)
+        for name, embs in database.items()
+    }
 
     # Pickle the database (compress it, basically)
     with open(EMBEDDINGS_FILE, 'wb') as f:
         pickle.dump(database, f)
 
-    print(f"\n[INFO] Database built: {len(database)} identities, {total_imgs} images.")
+    print(f"\n[INFO] Database built: {len(database)} identities, "
+          f"{min_count} embeddings each, {total_imgs} total images processed.")
     return database
 
 # Uses a (1,3,IMG_SIZE,IMG_SIZE) array (a tensor) to make an embedding layer of 512-Dim data. 
