@@ -210,4 +210,7 @@ __marimo__/
 # Face Recognition Data
 face_database/
 embeddings.pkl
-confusion_matrix.png
+
+# Generated evaluation plots
+confusion_matrix_*.png
+threshold_analysis_*.png

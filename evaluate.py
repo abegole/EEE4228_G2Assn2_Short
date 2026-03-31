@@ -20,6 +20,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 EMBEDDINGS_FILE = 'embeddings.pkl'
 
@@ -199,9 +200,11 @@ def evaluate_threshold_range(thresholds: list[float], names, embs):
     ax2.legend()
     ax2.grid(True, alpha=0.3)
 
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    out_path = f'threshold_analysis_{timestamp}.png'
     plt.tight_layout()
-    plt.savefig('threshold_analysis.png', dpi=120)
-    print("[INFO] Threshold analysis saved to threshold_analysis.png")
+    plt.savefig(out_path, dpi=120)
+    print(f"[INFO] Threshold analysis saved to [{out_path}]")
 
 
 if __name__ == '__main__':
