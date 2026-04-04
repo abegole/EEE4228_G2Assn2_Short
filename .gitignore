@@ -210,7 +210,10 @@ __marimo__/
 # Face Recognition Data
 face_database/
 embeddings.pkl
+TKSLightTest
+
 
 # Generated evaluation plots
 confusion_matrix_*.png
 threshold_analysis_*.png
+benchmark_image_size_*.png

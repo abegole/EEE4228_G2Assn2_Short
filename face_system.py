@@ -10,6 +10,7 @@ from torchvision import transforms
 from facenet_pytorch import MTCNN, InceptionResnetV1
 from sklearn.metrics.pairwise import cosine_similarity
 import random
+from time import perf_counter
 
 # MTCNN optimization of processor
 if torch.cuda.is_available() == 1:
@@ -56,6 +57,7 @@ def get_embeddings_batch(resnet, face_tensors: list[torch.Tensor]) -> list[np.nd
 
 def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
     # if the current path does not refer to an existing database path, make a new database
+    totaltime = perf_counter()
     if not os.path.isdir(db_dir):
         os.makedirs(db_dir)
         print(f"[INFO] Created database directory: {db_dir}/")
@@ -68,9 +70,10 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
 
     # Start an int to store an iterative count. Probably a better way to do this 
     total_imgs = 0
-    
+    ppl_embed_time: dict[str, float] = {}
+
     for person in sorted(os.listdir(db_dir)):
-        # If somehow the person's name is not a directory, skip it
+        start_person_time = perf_counter()
         person_dir = os.path.join(db_dir, person)
         if not os.path.isdir(person_dir):
             continue
@@ -100,10 +103,10 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
                     # Detect faces and get bounding boxes and probabilities
                     boxes, probs = mtcnn.detect(pil_version, landmarks=False)
                     if boxes is None or len(boxes) == 0:
-                        print(f"  [WARN] No face found in {img_path}")
+                        # print(f"  [WARN] No face found in {img_path}")
                         continue
-                    elif len(boxes) > 1:
-                        print(f"  [WARN] Multiple faces found in {img_path}, using highest confidence")
+                    #elif len(boxes) > 1:
+                     #   print(f"  [WARN] Multiple faces found in {img_path}, using highest confidence")
 
                     # Find the index of the face with the highest confidence
                     best_idx = np.argmax(probs)
@@ -126,10 +129,18 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
         if embeddings:
             # dict key is person's name, embeddings is numpy arrays of features
             database[person] = embeddings
-            print(f"  [INFO] {person}: {len(embeddings)} embeddings before balancing")
+            end_person_time = perf_counter()
+            ppl_embed_time[person] = end_person_time - start_person_time
+            print(f"  [INFO] {person}: {len(embeddings)} embeddings before balancing. Processing time: {ppl_embed_time[person]:.2f} seconds")
+            print(f"Average time per image for {person}: {ppl_embed_time[person]/len(embeddings):.2f} seconds")
+
         else:
             # If no valid, skip it
-            print(f"  [INFO] {person}: no valid faces found")
+            end_person_time = perf_counter()
+            ppl_embed_time[person] = end_person_time - start_person_time
+
+
+            print(f"  [INFO] {person}: no valid faces found. Processing time: {ppl_embed_time[person]:.2f} seconds")
 
     # Balance all classes to the smallest class size so no person
     # has more influence than another in the evaluation
@@ -153,6 +164,9 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
 
     print(f"\n[INFO] Database built: {len(database)} identities, "
           f"{min_count} embeddings each, {total_imgs} total images processed.")
+    totaltime_end = perf_counter()
+    print(f"\n[INFO] Total processing time: {totaltime_end - totaltime:.2f} seconds")
+    print(f"Average time per image overall: {(totaltime_end - totaltime)/total_imgs:.2f} seconds")
     return database
 
 # Uses a (1,3,IMG_SIZE,IMG_SIZE) array (a tensor) to make an embedding layer of 512-Dim data. 
