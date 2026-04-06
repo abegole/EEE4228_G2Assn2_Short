@@ -216,4 +216,5 @@ TKSLightTest
 # Generated evaluation plots
 confusion_matrix_*.png
 threshold_analysis_*.png
-benchmark_image_size_*.png
+benchmark_build_*.png
+filenames.pkl
