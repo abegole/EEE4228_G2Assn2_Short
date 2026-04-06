@@ -55,7 +55,7 @@ def get_embeddings_batch(resnet, face_tensors: list[torch.Tensor]) -> list[np.nd
     with torch.no_grad():
         embs = resnet(batch)
     return [e.cpu().numpy() for e in embs]
-def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False) -> dict:
+def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False, no_aug=False) -> dict:
     # if the current path does not refer to an existing database path, make a new database
     if debug:
         totaltime = perf_counter()
@@ -120,7 +120,13 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False) -> dict:
 
                 # Generate original + 5 augmented versions of every image
                 # This ensures every image contributes equally to the database
-                all_versions = [img_np] + augment_image(img_np)
+                if no_aug == True:
+                    all_versions = [img_np]
+                else:
+                    all_versions = [img_np] + augment_image(img_np)
+
+                if debug:
+                    aug_success = 0
 
                 for aug_idx, version in enumerate(all_versions):
                     # aug_idx 0 = original image, 1+ = augmented versions
@@ -132,8 +138,10 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False) -> dict:
 
                     # Detect faces and get bounding boxes and probabilities
                     boxes, probs = mtcnn.detect(pil_version, landmarks=False)
+
                     if boxes is None or len(boxes) == 0:
-                        # print(f"  [WARN] No face found in {img_path}")
+                        if debug:
+                            print(f"  [WARN] No face found in {img_path}, aug index {aug_idx}")
                         continue
                     #elif len(boxes) > 1:
                      #   print(f"  [WARN] Multiple faces found in {img_path}, using highest confidence")
@@ -153,12 +161,15 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False) -> dict:
                         all_file_sizes_kb.append(file_size_kb)
                         all_times_ms.append((img_end - img_start) * 1000)
                         all_person_labels.append(person)
+                        aug_success += 1
 
 
                     # Store tensor alongside its source filename and augment index
                     # so we can trace any misclassification back to the original file
                     face_tensor_batch.append((face_tensors[0], fname, aug_idx))
                     total_imgs += 1
+                if debug and aug_success != len(all_versions): 
+                    print(f"[INFO] {img_path}: Processed only {aug_success}/{len(all_versions)} augments")
 
             # If try fails, print the error pointing to the image
             except Exception as e:
@@ -289,8 +300,7 @@ def plot_build_benchmark(file_sizes_kb: list[float], times_ms: list[float], labe
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     ax.grid(True, alpha=0.3)
 
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    out_path = f'benchmark_build_{timestamp}.png'
+    out_path = f'benchmark_build_.png'
     plt.tight_layout()
 
     plt.savefig(out_path, dpi=120)
@@ -509,6 +519,8 @@ if __name__ == '__main__':
                         help='Manually rebuild of DB')
     parser.add_argument('--db', default=DB_PATH,
                         help='Specify face DB path')
+    parser.add_argument('--no_aug', action='store_true',
+                    help='Disable data augmentation')
     parser.add_argument('--debug', action='store_true',
                     help='Enable debug output (per-threshold person breakdown, verbose logging)')
     args = parser.parse_args()
@@ -520,7 +532,7 @@ if __name__ == '__main__':
 
     if args.rebuild == 1 or not os.path.exists(EMBEDDINGS_FILE) == 1:
         # Args added are run here if there are any, or if there's an embeddings file 
-        database = build_database(tsflw_mtcnn, model, args.db, debug=args.debug)
+        database = build_database(tsflw_mtcnn, model, args.db, debug=args.debug, no_aug=args.no_aug)
         print(f"[ARGS] Loaded {len(database)} faces")
 
     else:
