@@ -218,3 +218,5 @@ confusion_matrix_*.png
 threshold_analysis_*.png
 benchmark_build_*.png
 filenames.pkl
+per_person_accuracy_*.png
+confusion_matrix.png

@@ -55,9 +55,19 @@ def get_embeddings_batch(resnet, face_tensors: list[torch.Tensor]) -> list[np.nd
     with torch.no_grad():
         embs = resnet(batch)
     return [e.cpu().numpy() for e in embs]
-def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
+def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False) -> dict:
     # if the current path does not refer to an existing database path, make a new database
-    totaltime = perf_counter()
+    if debug:
+        totaltime = perf_counter()
+        filename_map: dict[str, list[dict]] = {}
+        ppl_embed_time: dict[str, list[float]] = {}
+        # Per-image tracking lists for the benchmark plot
+        all_file_sizes_kb: list[float] = []
+        all_times_ms: list[float] = []
+        all_person_labels: list[str] = []
+
+
+    
     if not os.path.isdir(db_dir):
         os.makedirs(db_dir)
         print(f"[INFO] Created database directory: {db_dir}/")
@@ -68,30 +78,27 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
     # (embeddings for that person).
     database: dict[str, list[np.ndarray]] = {}
 
-    # Parallel filename map — stores {name: [{'file': fname, 'augment': aug_idx}]}
-    # Index matches the corresponding embedding in database[name]
-    filename_map: dict[str, list[dict]] = {}
-
     # Start an int to store an iterative count. Probably a better way to do this 
     total_imgs = 0
-    ppl_embed_time: dict[str, list[float]] = {}
-
-    # Per-image tracking lists for the benchmark plot
-    all_file_sizes_kb: list[float] = []
-    all_times_ms: list[float] = []
-    all_person_labels: list[str] = []
 
     for person in sorted(os.listdir(db_dir)):
-        start_person_time = perf_counter()
-        # If somehow the person's name is not a directory, skip it
+        if debug:
+            start_person_time = perf_counter()
+
+        # If somehow the person's name is not a directory despite being pulled from directories, skip it
         person_dir = os.path.join(db_dir, person)
         if not os.path.isdir(person_dir):
             continue
+
+        #initialize embeds
         embeddings = []
+
         # Store tuples of (tensor, filename, augment_index) to track source image
         # aug_idx 0 = original, 1-5 = augmented versions
         face_tensor_batch: list[tuple] = []
-        ppl_embed_time[person] = [0.0, 0.0]  # Initialize list for this person
+        
+        if debug:
+            ppl_embed_time[person] = [0.0, 0.0]  # Initialize list for this person
 
         for fname in os.listdir(person_dir):
             # If invalid image type, skip it
@@ -104,10 +111,12 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
             # Try to open but if error is thrown it will escape
             try: # use try in case of bad/corrupt/invalid images
                 # Get file size in KB before loading image
-                file_size_kb = os.path.getsize(img_path) / 1024
                 img = Image.open(img_path).convert('RGB')
                 img_np = np.array(img)
-                ppl_embed_time[person][1] += file_size_kb
+                if debug:
+                    file_size_kb = os.path.getsize(img_path) / 1024
+                    ppl_embed_time[person][1] += file_size_kb
+
 
                 # Generate original + 5 augmented versions of every image
                 # This ensures every image contributes equally to the database
@@ -117,8 +126,9 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
                     # aug_idx 0 = original image, 1+ = augmented versions
                     pil_version = Image.fromarray(version)
 
-                    # Time each individual image version through the detection pipeline
-                    img_start = perf_counter()
+                    if debug:
+                        # Time each individual image version through the detection pipeline
+                        img_start = perf_counter()
 
                     # Detect faces and get bounding boxes and probabilities
                     boxes, probs = mtcnn.detect(pil_version, landmarks=False)
@@ -136,13 +146,14 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
                     if face_tensors is None or face_tensors[0] is None:
                         print(f"  [WARN] Failed to extract face from {img_path}")
                         continue
-                    img_end = perf_counter()
+                    if debug:
+                        # Record this image version's file size and detection time for the plot
+                        # File size is the original image's size, time is for this augmented version
+                        img_end = perf_counter()
+                        all_file_sizes_kb.append(file_size_kb)
+                        all_times_ms.append((img_end - img_start) * 1000)
+                        all_person_labels.append(person)
 
-                    # Record this image version's file size and detection time for the plot
-                    # File size is the original image's size, time is for this augmented version
-                    all_file_sizes_kb.append(file_size_kb)
-                    all_times_ms.append((img_end - img_start) * 1000)
-                    all_person_labels.append(person)
 
                     # Store tensor alongside its source filename and augment index
                     # so we can trace any misclassification back to the original file
@@ -157,28 +168,33 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
             # Extract just the tensors for batch embedding, preserving order
             tensors = [ft for ft, _, _ in face_tensor_batch]
             embeddings = get_embeddings_batch(resnet, tensors)
-
-            # Build the pre-balance filename map for this person
-            # Parallel to embeddings list — index i in embeddings matches index i here
-            filename_map[person] = [
-                {'file': fn, 'augment': aug_idx}
-                for _, fn, aug_idx in face_tensor_batch
+            if debug:
+                # Build the pre-balance filename map for this person
+                # Parallel to embeddings list. Index i in embeddings matches index i here
+                filename_map[person] = [
+                    {'file': fn, 'augment': aug_idx}
+                    for _, fn, aug_idx in face_tensor_batch
             ]
 
         # check if embeddings from this person is not empty
         if embeddings:
             # dict key is person's name, embeddings is numpy arrays of features
             database[person] = embeddings
-            end_person_time = perf_counter()
-            ppl_embed_time[person][0] = end_person_time - start_person_time
-            print(f"  [INFO] {person}: {len(embeddings)} embeddings before balancing. Processing time: {ppl_embed_time[person][0]:.2f} seconds")
-            print(f"Average time per image for {person}: {ppl_embed_time[person][0]/len(embeddings):.2f} seconds")
-            print(f"Average file size per image for {person}: {ppl_embed_time[person][1]/len(embeddings):.2f} KB")
+            print(f"  [INFO] {person}: {len(embeddings)} embeddings added to database.")
+            if debug:
+                end_person_time = perf_counter()
+                ppl_embed_time[person][0] = end_person_time - start_person_time
+                print(f"Processing time: {ppl_embed_time[person][0]:.2f} seconds")
+                print(f"Average time per image for {person}: {ppl_embed_time[person][0]/len(embeddings):.2f} seconds")
+                print(f"Average file size per image for {person}: {ppl_embed_time[person][1]/len(embeddings):.2f} KB")
         else:
             # If no valid, skip it
-            end_person_time = perf_counter()
-            ppl_embed_time[person][0] = end_person_time - start_person_time
-            print(f"  [INFO] {person}: no valid faces found. Processing time: {ppl_embed_time[person][0]:.2f} seconds")
+            if debug:
+                end_person_time = perf_counter()
+                ppl_embed_time[person][0] = end_person_time - start_person_time
+                print(f"  [INFO] {person}: no valid faces found. Processing time: {ppl_embed_time[person][0]:.2f} seconds")
+            else:
+                print(f"  [INFO] {person}: no valid faces found.")
 
     # Balance all classes to the smallest class size so no person
     # has more influence than another in the evaluation
@@ -195,34 +211,36 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH) -> dict:
     # Sample indices rather than values directly so filename_map stays in sync
     # with the balanced database — both are sampled using the same indices
     balanced_database = {}
-    balanced_filenames = {}
+    if debug:
+        balanced_filenames = {}
     for name, embs in database.items():
         # Randomly select which embedding indices to keep after balancing
         sampled_indices = random.sample(range(len(embs)), min_count)
         balanced_database[name] = [embs[i] for i in sampled_indices]
-        # Apply same indices to filename map so index i still points to the right file
-        balanced_filenames[name] = [filename_map[name][i] for i in sampled_indices]
+        if debug:
+            # Apply same indices to filename map so index i still points to the right file
+            balanced_filenames[name] = [filename_map[name][i] for i in sampled_indices]
 
     database = balanced_database
 
     # Pickle the database (compress it, basically)
     with open(EMBEDDINGS_FILE, 'wb') as f:
         pickle.dump(database, f)
-
-    # Save filename map separately so evaluate.py can trace misclassifications
-    # back to their source image file without modifying the main database format
-    with open('filenames.pkl', 'wb') as f:
-        pickle.dump(balanced_filenames, f)
+    if debug:
+        # Save filename map separately so evaluate.py can trace misclassifications
+        # back to their source image file without modifying the main database format
+        with open('filenames.pkl', 'wb') as f:
+            pickle.dump(balanced_filenames, f)
 
     print(f"\n[INFO] Database built: {len(database)} identities, "
           f"{min_count} embeddings each, {total_imgs} total images processed.")
-    totaltime_end = perf_counter()
-    print(f"\n[INFO] Total processing time: {totaltime_end - totaltime:.2f} seconds")
-    print(f"Average time per image overall: {(totaltime_end - totaltime)/total_imgs:.2f} seconds")
-    print(f"Average file size per image overall: {sum(ppl_embed_time[person][1] for person in ppl_embed_time)/total_imgs:.2f} KB")
-
-    # Plot processing time vs file size for every image processed
-    plot_build_benchmark(all_file_sizes_kb, all_times_ms, all_person_labels)
+    if debug:
+        totaltime_end = perf_counter()
+        print(f"\n[INFO] Total processing time: {totaltime_end - totaltime:.2f} seconds")
+        print(f"Average time per image overall: {(totaltime_end - totaltime)/total_imgs:.2f} seconds")
+        print(f"Average file size per image overall: {sum(ppl_embed_time[person][1] for person in ppl_embed_time)/total_imgs:.2f} KB")
+        # Plot processing time vs file size for every image processed
+        plot_build_benchmark(all_file_sizes_kb, all_times_ms, all_person_labels)
 
     return database
 
@@ -491,6 +509,8 @@ if __name__ == '__main__':
                         help='Manually rebuild of DB')
     parser.add_argument('--db', default=DB_PATH,
                         help='Specify face DB path')
+    parser.add_argument('--debug', action='store_true',
+                    help='Enable debug output (per-threshold person breakdown, verbose logging)')
     args = parser.parse_args()
 
     print(f"[DEBUG] Using device: {DEVICE}")
@@ -500,7 +520,7 @@ if __name__ == '__main__':
 
     if args.rebuild == 1 or not os.path.exists(EMBEDDINGS_FILE) == 1:
         # Args added are run here if there are any, or if there's an embeddings file 
-        database = build_database(tsflw_mtcnn, model, args.db)
+        database = build_database(tsflw_mtcnn, model, args.db, debug=args.debug)
         print(f"[ARGS] Loaded {len(database)} faces")
 
     else:

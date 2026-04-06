@@ -199,8 +199,11 @@ def loocv(names, y_true, y_pred, threshold, database, filename_map={}):
                 print(f"    {name}: {count}")
         print(f"\n  Total misclassified: {len(misidentified)}")
         print("══════════════════════════════════════════\n")
+    elif threshold != 0.65:
+        print("Skipping misclassified files for non 0.65 thresholds.")
     else:
         print("\n[INFO] No misclassifications found.")
+    
 
     return labels_present, acc, pre, rec, f1, unknown_rate
 
@@ -219,12 +222,15 @@ def evaluate_threshold_range(thresholds: list[float], names, embs):
         'unknown_rate': []
     }
 
+    # Per-person accuracy at each threshold — {name: [acc_at_t1, acc_at_t2, ...]}
+    per_person: dict[str, list[float]] = {name: [] for name in names}
+
     for t in thresholds:
         y_true, y_pred = [], []
 
         print(f"Testing threshold {t:.2f}...")
         # Run same LOOCV logic but return metrics instead of printing
-        labels_present, acc, pre, rec, f1, unk = loocv(names, y_true, y_pred, t, embs)
+        labels_present, acc, pre, rec, f1, unk = loocv(names, y_true, y_pred, t, database)
         results['threshold'].append(t)
         results['accuracy'].append(acc)
         results['precision'].append(pre)
@@ -232,7 +238,19 @@ def evaluate_threshold_range(thresholds: list[float], names, embs):
         results['f1'].append(f1)
         results['unknown_rate'].append(unk)
 
-    # Plot
+        # Extract per-person accuracy from y_true and y_pred directly
+        # Same calculation as the per-person breakdown printed in loocv
+        for name in names:
+            idxs = [i for i, label in enumerate(y_true) if label == name]
+            correct = sum(1 for i in idxs if y_pred[i] == name)
+            total = len(idxs)
+            person_acc = correct / total * 100 if total > 0 else 0.0
+            per_person[name].append(person_acc)
+
+            # Print so you can see the values as it runs
+            print(f"  {name}: {t:.2f} → {person_acc:.1f}%")
+
+    # Plot threshold analysis
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     # Left plot - recognition metrics
@@ -265,6 +283,29 @@ def evaluate_threshold_range(thresholds: list[float], names, embs):
     plt.tight_layout()
     plt.savefig(out_path, dpi=120)
     print(f"[INFO] Threshold analysis saved to [{out_path}]")
+
+    # Plot per-person accuracy across thresholds
+    # One line per person showing how their individual accuracy changes with threshold
+    fig, ax = plt.subplots(figsize=(12, 6))
+    colours = plt.cm.tab10(np.linspace(0, 1, len(names)))
+
+    for name, colour in zip(names, colours):
+        ax.plot(results['threshold'], per_person[name],
+                marker='o', label=name, color=colour)
+
+    ax.axvline(x=0.65, color='red', linestyle=':', label='Current threshold')
+    ax.set_xlabel('Threshold')
+    ax.set_ylabel('Accuracy (%)')
+    ax.set_title('Per-Person Recognition Accuracy vs Threshold')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.set_ylim([0, 105])
+    ax.grid(True, alpha=0.3)
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    out_path = f'per_person_accuracy_{timestamp}.png'
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=120)
+    print(f"[INFO] Per-person accuracy plot saved to [{out_path}]")
 
 
 if __name__ == '__main__':
