@@ -307,11 +307,122 @@ def evaluate_threshold_range(thresholds: list[float], names, embs):
     plt.savefig(out_path, dpi=120)
     print(f"[INFO] Per-person accuracy plot saved to [{out_path}]")
 
+def compare_augmentation(names: list[str], database_aug: dict, thresholds: np.ndarray):
+    """
+    Run threshold sweep LOOCV on both augmented and non-augmented databases,
+    then plot side-by-side metric comparisons and compute RMSE between them.
+    """
+    # Check non-augmented database exists — only generated with --compare_aug flag
+    if not os.path.exists('embeddings_noaug.pkl'):
+        print("[WARN] embeddings_noaug.pkl not found. Run face_system.py --rebuild --compare_aug first.")
+        return
 
+    with open('embeddings_noaug.pkl', 'rb') as f:
+        database_noaug: dict = pickle.load(f)
+
+    names_noaug = sorted(database_noaug.keys())
+
+    # Results storage for both databases across all thresholds
+    metrics = ['accuracy', 'precision', 'recall', 'f1', 'unknown_rate']
+    results_aug   = {m: [] for m in metrics}
+    results_noaug = {m: [] for m in metrics}
+    results_aug['threshold']   = []
+    results_noaug['threshold'] = []
+
+    for t in thresholds:
+        print(f"Comparing threshold {t:.2f}...")
+
+        # Run LOOCV on augmented database
+        y_true_aug, y_pred_aug = [], []
+        _, acc, pre, rec, f1, unk = loocv(names, y_true_aug, y_pred_aug, t, database_aug)
+        results_aug['threshold'].append(t)
+        results_aug['accuracy'].append(acc)
+        results_aug['precision'].append(pre)
+        results_aug['recall'].append(rec)
+        results_aug['f1'].append(f1)
+        results_aug['unknown_rate'].append(unk)
+
+        # Run LOOCV on non-augmented database
+        y_true_noaug, y_pred_noaug = [], []
+        _, acc, pre, rec, f1, unk = loocv(names_noaug, y_true_noaug, y_pred_noaug, t, database_noaug)
+        results_noaug['threshold'].append(t)
+        results_noaug['accuracy'].append(acc)
+        results_noaug['precision'].append(pre)
+        results_noaug['recall'].append(rec)
+        results_noaug['f1'].append(f1)
+        results_noaug['unknown_rate'].append(unk)
+
+    # Print RMSE table — measures average difference between augmented and non-augmented
+    # across all thresholds for each metric. Higher RMSE = augmentation had more impact.
+    print("\n══════════════════════════════════════════════════════════════")
+    print("  Augmentation Comparison — RMSE across threshold sweep")
+    print("══════════════════════════════════════════════════════════════")
+    print(f"  {'Metric':<20} {'RMSE':>10} {'Avg Aug':>10} {'Avg NoAug':>10}")
+    print("─" * 54)
+    for m in metrics:
+        aug_vals   = np.array(results_aug[m])
+        noaug_vals = np.array(results_noaug[m])
+        # RMSE between the two curves — how much augmentation shifts each metric
+        rmse = np.sqrt(np.mean((aug_vals - noaug_vals) ** 2)) * 100
+        avg_aug   = np.mean(aug_vals) * 100
+        avg_noaug = np.mean(noaug_vals) * 100
+        print(f"  {m.capitalize():<20} {rmse:>9.3f}% {avg_aug:>9.2f}% {avg_noaug:>9.2f}%")
+    print("══════════════════════════════════════════════════════════════\n")
+
+    # Plot — one subplot per metric, augmented vs non-augmented on same axes
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    axes = axes.flatten()
+
+    for idx, m in enumerate(metrics):
+        ax = axes[idx]
+        ax.plot(results_aug['threshold'],
+                [v * 100 for v in results_aug[m]],
+                marker='o', color='blue', label='Augmented')
+        ax.plot(results_noaug['threshold'],
+                [v * 100 for v in results_noaug[m]],
+                marker='s', color='orange', linestyle='--', label='No Augmentation')
+
+        # Shade the difference between the two curves to visualise impact
+        ax.fill_between(results_aug['threshold'],
+                        [v * 100 for v in results_aug[m]],
+                        [v * 100 for v in results_noaug[m]],
+                        alpha=0.15, color='green', label='Difference')
+
+        # RMSE annotation on each subplot
+        aug_vals   = np.array(results_aug[m])
+        noaug_vals = np.array(results_noaug[m])
+        rmse = np.sqrt(np.mean((aug_vals - noaug_vals) ** 2)) * 100
+        ax.text(0.05, 0.05, f'RMSE={rmse:.3f}%',
+                transform=ax.transAxes, fontsize=9,
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+        ax.axvline(x=0.65, color='red', linestyle=':', label='Current threshold')
+        ax.set_xlabel('Threshold')
+        ax.set_ylabel('Percentage (%)')
+        ax.set_title(f'{m.capitalize()} vs Threshold')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim([0, 105])
+
+    # Hide the unused 6th subplot since we only have 5 metrics
+    axes[5].set_visible(False)
+
+    plt.suptitle('Augmented vs Non-Augmented Database Comparison', fontsize=14, y=1.02)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    out_path = f'augmentation_comparison_{timestamp}.png'
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=120, bbox_inches='tight')
+    print(f"[INFO] Augmentation comparison plot saved to [{out_path}]")
+    
 if __name__ == '__main__':
     names, database, filename_map = database_load()
     parser = argparse.ArgumentParser()
     parser.add_argument('--threshold', type=float, default=0.65)
+    parser.add_argument('--compare_aug', action='store_true', help='Compare augmented vs non-augmented database metrics')
     args = parser.parse_args()
     evaluate(args.threshold, names, database, filename_map )
     evaluate_threshold_range(np.linspace(0.45,0.95,10),  names, database)
+
+    # Run augmentation comparison if requested and embeddings_noaug.pkl exists
+    if args.compare_aug:
+        compare_augmentation(names, database, np.linspace(0.45, 0.95, 10))

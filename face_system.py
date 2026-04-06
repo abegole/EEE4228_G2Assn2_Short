@@ -55,7 +55,8 @@ def get_embeddings_batch(resnet, face_tensors: list[torch.Tensor]) -> list[np.nd
     with torch.no_grad():
         embs = resnet(batch)
     return [e.cpu().numpy() for e in embs]
-def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False, no_aug=False) -> dict:
+
+def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False, no_aug=False, compare_aug=False) -> dict:
     # if the current path does not refer to an existing database path, make a new database
     if debug:
         totaltime = perf_counter()
@@ -66,17 +67,20 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False, no_aug=Fal
         all_times_ms: list[float] = []
         all_person_labels: list[str] = []
 
-
-    
     if not os.path.isdir(db_dir):
         os.makedirs(db_dir)
         print(f"[INFO] Created database directory: {db_dir}/")
-        return {} # Since we just made an empty DB, there's nothing to load so return
+        return {}
 
     # create a database as a dict class, which stores data as key-value pairs
     # Key is a string (person's name) and value is a list of numpy arrays 
     # (embeddings for that person).
     database: dict[str, list[np.ndarray]] = {}
+
+    # If compare_aug is enabled, build a second database without augmentation
+    # in parallel so we can quantitatively compare augmented vs non-augmented performance
+    if compare_aug:
+        database_noaug: dict[str, list[np.ndarray]] = {}
 
     # Start an int to store an iterative count. Probably a better way to do this 
     total_imgs = 0
@@ -90,13 +94,16 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False, no_aug=Fal
         if not os.path.isdir(person_dir):
             continue
 
-        #initialize embeds
+        # Initialize embeds
         embeddings = []
 
         # Store tuples of (tensor, filename, augment_index) to track source image
         # aug_idx 0 = original, 1-5 = augmented versions
         face_tensor_batch: list[tuple] = []
-        
+
+        # Separate batch for non-augmented originals only — used for compare_aug
+        face_tensor_batch_noaug: list[tuple] = []
+
         if debug:
             ppl_embed_time[person] = [0.0, 0.0]  # Initialize list for this person
 
@@ -110,13 +117,11 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False, no_aug=Fal
 
             # Try to open but if error is thrown it will escape
             try: # use try in case of bad/corrupt/invalid images
-                # Get file size in KB before loading image
                 img = Image.open(img_path).convert('RGB')
                 img_np = np.array(img)
                 if debug:
                     file_size_kb = os.path.getsize(img_path) / 1024
                     ppl_embed_time[person][1] += file_size_kb
-
 
                 # Generate original + 5 augmented versions of every image
                 # This ensures every image contributes equally to the database
@@ -143,8 +148,6 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False, no_aug=Fal
                         if debug:
                             print(f"  [WARN] No face found in {img_path}, aug index {aug_idx}")
                         continue
-                    #elif len(boxes) > 1:
-                     #   print(f"  [WARN] Multiple faces found in {img_path}, using highest confidence")
 
                     # Find the index of the face with the highest confidence
                     best_idx = np.argmax(probs)
@@ -154,6 +157,7 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False, no_aug=Fal
                     if face_tensors is None or face_tensors[0] is None:
                         print(f"  [WARN] Failed to extract face from {img_path}")
                         continue
+
                     if debug:
                         # Record this image version's file size and detection time for the plot
                         # File size is the original image's size, time is for this augmented version
@@ -163,12 +167,16 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False, no_aug=Fal
                         all_person_labels.append(person)
                         aug_success += 1
 
-
                     # Store tensor alongside its source filename and augment index
                     # so we can trace any misclassification back to the original file
                     face_tensor_batch.append((face_tensors[0], fname, aug_idx))
                     total_imgs += 1
-                if debug and aug_success != len(all_versions): 
+
+                    # If compare_aug, also store originals only (aug_idx 0) separately
+                    if compare_aug and aug_idx == 0:
+                        face_tensor_batch_noaug.append((face_tensors[0], fname, aug_idx))
+
+                if debug and aug_success != len(all_versions):
                     print(f"[INFO] {img_path}: Processed only {aug_success}/{len(all_versions)} augments")
 
             # If try fails, print the error pointing to the image
@@ -181,11 +189,17 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False, no_aug=Fal
             embeddings = get_embeddings_batch(resnet, tensors)
             if debug:
                 # Build the pre-balance filename map for this person
-                # Parallel to embeddings list. Index i in embeddings matches index i here
+                # Parallel to embeddings list — index i in embeddings matches index i here
                 filename_map[person] = [
                     {'file': fn, 'augment': aug_idx}
                     for _, fn, aug_idx in face_tensor_batch
-            ]
+                ]
+
+        # Build non-augmented embeddings separately if compare_aug enabled
+        if compare_aug and face_tensor_batch_noaug:
+            tensors_noaug = [ft for ft, _, _ in face_tensor_batch_noaug]
+            embeddings_noaug = get_embeddings_batch(resnet, tensors_noaug)
+            database_noaug[person] = embeddings_noaug
 
         # check if embeddings from this person is not empty
         if embeddings:
@@ -234,9 +248,22 @@ def build_database(mtcnn, resnet, db_dir: str = DB_PATH, debug=False, no_aug=Fal
 
     database = balanced_database
 
+    # Balance non-augmented database to its own minimum for fair comparison
+    if compare_aug and database_noaug:
+        min_count_noaug = min(len(embs) for embs in database_noaug.values())
+        database_noaug = {
+            name: random.sample(embs, min_count_noaug)
+            for name, embs in database_noaug.items()
+        }
+        # Save non-augmented database to separate pkl for evaluate.py
+        with open('embeddings_noaug.pkl', 'wb') as f:
+            pickle.dump(database_noaug, f)
+        print(f"[INFO] Non-augmented database saved: {min_count_noaug} embeddings each.")
+
     # Pickle the database (compress it, basically)
     with open(EMBEDDINGS_FILE, 'wb') as f:
         pickle.dump(database, f)
+
     if debug:
         # Save filename map separately so evaluate.py can trace misclassifications
         # back to their source image file without modifying the main database format
@@ -523,6 +550,8 @@ if __name__ == '__main__':
                     help='Disable data augmentation')
     parser.add_argument('--debug', action='store_true',
                     help='Enable debug output (per-threshold person breakdown, verbose logging)')
+    parser.add_argument('--compare_aug', action='store_true',
+                    help='Build a second non-augmented database for evaluation comparison')
     args = parser.parse_args()
 
     print(f"[DEBUG] Using device: {DEVICE}")
@@ -532,7 +561,8 @@ if __name__ == '__main__':
 
     if args.rebuild == 1 or not os.path.exists(EMBEDDINGS_FILE) == 1:
         # Args added are run here if there are any, or if there's an embeddings file 
-        database = build_database(tsflw_mtcnn, model, args.db, debug=args.debug, no_aug=args.no_aug)
+        
+        database = build_database(tsflw_mtcnn, model, args.db, debug=args.debug, no_aug=args.no_aug, compare_aug=args.compare_aug)
         print(f"[ARGS] Loaded {len(database)} faces")
 
     else:
